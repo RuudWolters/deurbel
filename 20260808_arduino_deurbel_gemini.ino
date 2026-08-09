@@ -15,6 +15,7 @@ In deze versie zijn alle eerdere verbeteringen gecombineerd:
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ESP8266WebServer.h>
+#include <EEPROM.h>
 #include <time.h>
 #include <stdarg.h>
 #include "wifi_secrets.h"
@@ -40,6 +41,11 @@ static const uint32_t HEAP_WARN_BYTES = 12000;
 static const uint32_t HEAP_CRIT_BYTES = 9000;
 static const uint32_t HEAP_RECOVER_BYTES = 14000;
 static const uint32_t HEAP_ALERT_COOLDOWN_MS = 30UL * 60UL * 1000UL;
+
+static const uint32_t SETTINGS_MAGIC = 0x4442554CUL;
+static const uint16_t SETTINGS_VERSION = 1;
+static const uint16_t SETTINGS_EEPROM_SIZE = 128;
+static bool gSettingsStorageReady = false;
 
 /* ===================== STATE ===================== */
 static bool gRelayOldEnabled = true;
@@ -90,6 +96,26 @@ static DebugEvent gDebugEvents[40];
 static uint8_t gDebugHead = 0;
 static uint8_t gDebugSize = 0;
 
+struct PersistentSettings {
+  uint32_t magic;
+  uint16_t version;
+  uint8_t relayOldEnabled;
+  uint8_t relayNewEnabled;
+  uint8_t telegramEnabled;
+  uint8_t nightModeOldEnabled;
+  uint8_t nightModeNewEnabled;
+  uint8_t nightModeTelegramEnabled;
+  uint8_t nightOldStartHour;
+  uint8_t nightOldEndHour;
+  uint8_t nightNewStartHour;
+  uint8_t nightNewEndHour;
+  uint8_t nightTgStartHour;
+  uint8_t nightTgEndHour;
+  uint8_t debugUiEnabled;
+  uint8_t reserved[8];
+  uint32_t checksum;
+};
+
 /* Forward declarations */
 static bool isTelegramMuted();
 static bool getEpoch(uint32_t &outEpoch);
@@ -104,6 +130,9 @@ static void debugLogVerbose(const char *fmt, ...);
 static void debugClear();
 static String buildDebugText(uint8_t maxLines, bool includeHeader);
 static bool sendDebugLogToTelegram();
+static uint8_t clampHour(int value);
+static bool loadPersistentSettings();
+static bool savePersistentSettings();
 
 /* ===================== QUEUE ===================== */
 struct RingEvent {
@@ -212,6 +241,85 @@ static bool sendDebugLogToTelegram() {
   }
 
   return telegramSendText(msg, true);
+}
+
+static uint32_t calcSettingsChecksum(const PersistentSettings &cfg) {
+  const uint8_t *p = reinterpret_cast<const uint8_t*>(&cfg);
+  size_t len = sizeof(PersistentSettings) - sizeof(cfg.checksum);
+
+  // Kleine, snelle FNV-1a checksum voor integriteitscontrole.
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < len; i++) {
+    hash ^= p[i];
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+static void applyPersistentSettings(const PersistentSettings &cfg) {
+  gRelayOldEnabled = cfg.relayOldEnabled != 0;
+  gRelayNewEnabled = cfg.relayNewEnabled != 0;
+  gTelegramEnabled = cfg.telegramEnabled != 0;
+
+  nightModeOldEnabled = cfg.nightModeOldEnabled != 0;
+  nightModeNewEnabled = cfg.nightModeNewEnabled != 0;
+  nightModeTelegramEnabled = cfg.nightModeTelegramEnabled != 0;
+
+  nightOldStartHour = clampHour(cfg.nightOldStartHour);
+  nightOldEndHour = clampHour(cfg.nightOldEndHour);
+  nightNewStartHour = clampHour(cfg.nightNewStartHour);
+  nightNewEndHour = clampHour(cfg.nightNewEndHour);
+  nightTgStartHour = clampHour(cfg.nightTgStartHour);
+  nightTgEndHour = clampHour(cfg.nightTgEndHour);
+
+  gDebugUiEnabled = cfg.debugUiEnabled != 0;
+}
+
+static void fillPersistentSettings(PersistentSettings &cfg) {
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.magic = SETTINGS_MAGIC;
+  cfg.version = SETTINGS_VERSION;
+
+  cfg.relayOldEnabled = gRelayOldEnabled ? 1 : 0;
+  cfg.relayNewEnabled = gRelayNewEnabled ? 1 : 0;
+  cfg.telegramEnabled = gTelegramEnabled ? 1 : 0;
+
+  cfg.nightModeOldEnabled = nightModeOldEnabled ? 1 : 0;
+  cfg.nightModeNewEnabled = nightModeNewEnabled ? 1 : 0;
+  cfg.nightModeTelegramEnabled = nightModeTelegramEnabled ? 1 : 0;
+
+  cfg.nightOldStartHour = nightOldStartHour;
+  cfg.nightOldEndHour = nightOldEndHour;
+  cfg.nightNewStartHour = nightNewStartHour;
+  cfg.nightNewEndHour = nightNewEndHour;
+  cfg.nightTgStartHour = nightTgStartHour;
+  cfg.nightTgEndHour = nightTgEndHour;
+
+  cfg.debugUiEnabled = gDebugUiEnabled ? 1 : 0;
+  cfg.checksum = calcSettingsChecksum(cfg);
+}
+
+static bool loadPersistentSettings() {
+  if (!gSettingsStorageReady) return false;
+
+  PersistentSettings cfg;
+  EEPROM.get(0, cfg);
+
+  if (cfg.magic != SETTINGS_MAGIC) return false;
+  if (cfg.version != SETTINGS_VERSION) return false;
+  if (cfg.checksum != calcSettingsChecksum(cfg)) return false;
+
+  applyPersistentSettings(cfg);
+  return true;
+}
+
+static bool savePersistentSettings() {
+  if (!gSettingsStorageReady) return false;
+
+  PersistentSettings cfg;
+  fillPersistentSettings(cfg);
+  EEPROM.put(0, cfg);
+  return EEPROM.commit();
 }
 
 static void queuePush() {
@@ -676,15 +784,39 @@ static void handleNight() {
   }
 
   if (enabled && start && end) {
-    if (web.hasArg("en")) *enabled = web.arg("en").toInt() != 0;
-    if (web.hasArg("start")) *start = clampHour(web.arg("start").toInt());
-    if (web.hasArg("end")) *end = clampHour(web.arg("end").toInt());
+    bool changed = false;
+
+    if (web.hasArg("en")) {
+      bool newEnabled = web.arg("en").toInt() != 0;
+      if (*enabled != newEnabled) {
+        *enabled = newEnabled;
+        changed = true;
+      }
+    }
+    if (web.hasArg("start")) {
+      uint8_t newStart = clampHour(web.arg("start").toInt());
+      if (*start != newStart) {
+        *start = newStart;
+        changed = true;
+      }
+    }
+    if (web.hasArg("end")) {
+      uint8_t newEnd = clampHour(web.arg("end").toInt());
+      if (*end != newEnd) {
+        *end = newEnd;
+        changed = true;
+      }
+    }
 
     debugLog("Nachtmodus %s: en=%s start=%u end=%u",
              ch.c_str(),
              *enabled ? "aan" : "uit",
              (unsigned)*start,
              (unsigned)*end);
+
+    if (changed) {
+      savePersistentSettings();
+    }
   }
 
   web.sendHeader("Location", "/");
@@ -710,12 +842,19 @@ static void handleDebug() {
 
   if (web.hasArg("en")) {
     bool enable = web.arg("en").toInt() != 0;
+    bool changed = false;
     if (enable && !gDebugUiEnabled) {
       gDebugUiEnabled = true;
+      changed = true;
       debugLog("Debugmodus ingeschakeld");
     } else if (!enable && gDebugUiEnabled) {
       debugLog("Debugmodus uitgeschakeld");
       gDebugUiEnabled = false;
+      changed = true;
+    }
+
+    if (changed) {
+      savePersistentSettings();
     }
   }
 
@@ -730,13 +869,23 @@ static void handleDebug() {
 static void handlePartPower() {
   String ch = web.arg("ch");
   bool enable = web.arg("en").toInt() != 0;
+  bool changed = false;
 
   if (ch == "old") {
-    gRelayOldEnabled = enable;
+    if (gRelayOldEnabled != enable) {
+      gRelayOldEnabled = enable;
+      changed = true;
+    }
   } else if (ch == "new") {
-    gRelayNewEnabled = enable;
+    if (gRelayNewEnabled != enable) {
+      gRelayNewEnabled = enable;
+      changed = true;
+    }
   } else if (ch == "tg") {
-    gTelegramEnabled = enable;
+    if (gTelegramEnabled != enable) {
+      gTelegramEnabled = enable;
+      changed = true;
+    }
     if (!enable) {
       // Bij volledig uitzetten van Telegram ook meteen wachtrij leeg maken.
       queueClear();
@@ -744,6 +893,10 @@ static void handlePartPower() {
   }
 
   debugLog("Onderdeel %s -> %s", ch.c_str(), enable ? "aan" : "uit");
+
+  if (changed) {
+    savePersistentSettings();
+  }
 
   web.sendHeader("Location", "/");
   web.send(302);
@@ -788,6 +941,18 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButtonInterrupt, FALLING);
 
   pinMode(PIN_LED, OUTPUT);
+
+  gSettingsStorageReady = EEPROM.begin(SETTINGS_EEPROM_SIZE);
+  if (gSettingsStorageReady) {
+    if (loadPersistentSettings()) {
+      debugLog("Persistente instellingen geladen");
+    } else {
+      savePersistentSettings();
+      debugLog("Standaardinstellingen opgeslagen");
+    }
+  } else {
+    debugLog("Waarschuwing: EEPROM niet beschikbaar");
+  }
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   configTime(0, 0, "pool.ntp.org");

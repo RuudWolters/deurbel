@@ -18,6 +18,7 @@ Belangrijkste eigenschappen:
 - Debugsectie met actielog op de webpagina
 - Debuglog exporteren als .txt via webinterface
 - Debuglog direct doorsturen naar Telegram
+- Persistente instellingen in flash (na reboot blijven instellingen bewaard)
 - Geheugenbewaking met waarschuwingen
 
 ## Bestandsstructuur
@@ -76,6 +77,10 @@ Debuggedrag:
 - Basislog is altijd actief
 - Debug aan geeft extra detailregels
 
+Persistente instellingen:
+- Worden automatisch opgeslagen: onderdelen aan/uit, nachtmodus aan/uit, nachturen en debug aan/uit
+- Blijft tijdelijk: dempen per duur (30 min, 1 uur, 2 uur, 4 uur)
+
 ## Projectdoel
 
 Dit project is gemaakt voor een praktische, stabiele en goed beheersbare deurbeloplossing met focus op:
@@ -87,6 +92,5 @@ Dit project is gemaakt voor een praktische, stabiele en goed beheersbare deurbel
 ## Verbeterideeën
 
 Mogelijke volgende stappen:
-- Instellingen persistent opslaan na reboot
 - OTA updates
 - Extra notificatiekanalen
