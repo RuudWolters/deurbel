@@ -102,6 +102,8 @@ static bool isTelegramNightMuted();
 static void debugLog(const char *fmt, ...);
 static void debugLogVerbose(const char *fmt, ...);
 static void debugClear();
+static String buildDebugText(uint8_t maxLines, bool includeHeader);
+static bool sendDebugLogToTelegram();
 
 /* ===================== QUEUE ===================== */
 struct RingEvent {
@@ -166,6 +168,50 @@ static void debugLogVerbose(const char *fmt, ...) {
   va_end(args);
 
   debugLog("%s", buf);
+}
+
+static String buildDebugText(uint8_t maxLines, bool includeHeader) {
+  String out;
+  out.reserve(1600);
+
+  if (includeHeader) {
+    out += "Debuglog deurbel\n";
+    out += "Totaal regels: ";
+    out += String(gDebugSize);
+    out += "\n\n";
+  }
+
+  if (gDebugSize == 0) {
+    out += "(geen acties)\n";
+    return out;
+  }
+
+  uint8_t lines = gDebugSize;
+  if (maxLines > 0 && lines > maxLines) lines = maxLines;
+  uint8_t start = (uint8_t)(gDebugSize - lines);
+
+  for (uint8_t i = 0; i < lines; i++) {
+    uint8_t idx = (gDebugHead + start + i) % 40;
+    out += "[";
+    out += debugTimeLabel(gDebugEvents[idx]);
+    out += "] ";
+    out += gDebugEvents[idx].text;
+    out += "\n";
+  }
+
+  return out;
+}
+
+static bool sendDebugLogToTelegram() {
+  String msg = buildDebugText(20, true);
+
+  // Telegram limiet is ~4096 chars; houd marge voor veiligheid.
+  if (msg.length() > 3200) {
+    msg.remove(3200);
+    msg += "\n... ingekort";
+  }
+
+  return telegramSendText(msg, true);
 }
 
 static void queuePush() {
@@ -508,7 +554,7 @@ static void handleRoot() {
   web.sendContent(F("</div><div class='section'><h2>🧪 Debugging</h2>"));
   chunk = "<div class='mute-block'><div class='mute-title'>Debugmodus</div><div class='mute-status'>Status: ";
   chunk += gDebugUiEnabled ? "aan" : "uit";
-  chunk += " (basislog altijd actief, aan = extra details)</div><a class='btn' href='/debug?en=1'>Debug aan</a><a class='btn btn-off' href='/debug?en=0'>Debug uit</a><a class='btn btn-off' href='/debug?clear=1'>Log leegmaken</a></div>";
+  chunk += " (basislog altijd actief, aan = extra details)</div><a class='btn' href='/debug?en=1'>Debug aan</a><a class='btn btn-off' href='/debug?en=0'>Debug uit</a><a class='btn btn-off' href='/debug?clear=1'>Log leegmaken</a><a class='btn' href='/debug?export=1'>Export .txt</a><a class='btn' href='/debug?sendtg=1'>Stuur naar Telegram</a></div>";
   web.sendContent(chunk);
 
   web.sendContent(F("<div class='mute-block'><div class='mute-title'>Actielog (geen ruststatus)</div><div class='log-wrap'>"));
@@ -646,6 +692,22 @@ static void handleNight() {
 }
 
 static void handleDebug() {
+  if (web.hasArg("export")) {
+    String txt = buildDebugText(0, true);
+    web.sendHeader("Content-Disposition", "attachment; filename=debug-log.txt");
+    web.send(200, "text/plain; charset=utf-8", txt);
+    debugLog("Debuglog geexporteerd via web");
+    return;
+  }
+
+  if (web.hasArg("sendtg")) {
+    bool ok = sendDebugLogToTelegram();
+    debugLog("Debuglog naar Telegram: %s", ok ? "gelukt" : "mislukt");
+    web.sendHeader("Location", "/");
+    web.send(302);
+    return;
+  }
+
   if (web.hasArg("en")) {
     bool enable = web.arg("en").toInt() != 0;
     if (enable && !gDebugUiEnabled) {

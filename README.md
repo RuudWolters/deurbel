@@ -16,6 +16,8 @@ Belangrijkste eigenschappen:
 - Nachtmodus per onderdeel met eigen tijdvenster
 - Volledig aan/uit per onderdeel
 - Debugsectie met actielog op de webpagina
+- Debuglog exporteren als .txt via webinterface
+- Debuglog direct doorsturen naar Telegram
 - Geheugenbewaking met waarschuwingen
 
 ## Bestandsstructuur
@@ -67,6 +69,8 @@ Beschikbare bediening:
 - Tijdelijk dempen per onderdeel
 - Nachtmodus per onderdeel (aan/uit + tijden)
 - Debugmodus en actielog
+- Debuglog exporteren (.txt)
+- Debuglog doorsturen naar Telegram
 
 Debuggedrag:
 - Basislog is altijd actief
@@ -86,4 +90,3 @@ Mogelijke volgende stappen:
 - Instellingen persistent opslaan na reboot
 - OTA updates
 - Extra notificatiekanalen
-- Export van debuglog
