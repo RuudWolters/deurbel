@@ -942,7 +942,8 @@ void setup() {
 
   pinMode(PIN_LED, OUTPUT);
 
-  gSettingsStorageReady = EEPROM.begin(SETTINGS_EEPROM_SIZE);
+  EEPROM.begin(SETTINGS_EEPROM_SIZE);
+  gSettingsStorageReady = true;
   if (gSettingsStorageReady) {
     if (loadPersistentSettings()) {
       debugLog("Persistente instellingen geladen");
