@@ -29,6 +29,7 @@ Main features:
 ### File structure
 
 - Main sketch: [20260808_arduino_deurbel_gemini.ino](20260808_arduino_deurbel_gemini.ino)
+- English sketch: [20260808_arduino_doorbell_gemini_en.ino](20260808_arduino_doorbell_gemini_en.ino)
 - Local credentials (do not commit): [wifi_secrets.h](wifi_secrets.h)
 - Credential template: [wifi_secrets.example.h](wifi_secrets.example.h)
 - Git ignore rules: [.gitignore](.gitignore)
@@ -46,6 +47,7 @@ Steps:
 
 Hardware list from this build:
 - ESP-01S ESP8266 serial module
+- 12V DC to 5V DC converter
 - RC absorption or snubber circuit module for relay contact protection
 - ESP8266 ESP-01 or ESP-01S 1-channel or 2-channel relay module
 - CACAZI wireless waterproof doorbell set
@@ -132,6 +134,7 @@ Belangrijkste functies:
 ### Bestandsstructuur
 
 - Hoofdsketch: [20260808_arduino_deurbel_gemini.ino](20260808_arduino_deurbel_gemini.ino)
+- Engelse sketch: [20260808_arduino_doorbell_gemini_en.ino](20260808_arduino_doorbell_gemini_en.ino)
 - Lokale credentials (niet committen): [wifi_secrets.h](wifi_secrets.h)
 - Voorbeeldbestand credentials: [wifi_secrets.example.h](wifi_secrets.example.h)
 - Git ignore regels: [.gitignore](.gitignore)
@@ -149,6 +152,7 @@ Stappen:
 
 Hardwarelijst van deze build:
 - ESP-01S ESP8266 seriele module
+- 12V DC naar 5V DC omzetter
 - RC absorptie of snubber circuit module voor relaiscontactbescherming
 - ESP8266 ESP-01 of ESP-01S 1-kanaals of 2-kanaals relaismodule
 - CACAZI draadloze waterdichte deurbel set

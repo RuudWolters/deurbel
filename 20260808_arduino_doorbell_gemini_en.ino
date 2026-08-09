@@ -1,12 +1,12 @@
 /*
-Hier is de **volledige, geoptimaliseerde en stabiele code**.
+Here is the **complete, optimized and stable code**.
 
-In deze versie zijn alle eerdere verbeteringen gecombineerd:
+This version combines all earlier improvements:
 
-1. **Volledig non-blocking (`millis()`)**: Geen enkele `delay()` meer, waardoor de ESP nooit "bevriest" tijdens het luiden van de bel.
-2. **Interrupt op de knop**: De knopdruk wordt direct op hardwareniveau geregistreerd, zelfs als de ESP8266 netwerk- of webtaken uitvoert.
-3. **Hardware conflict opgelost**: `Serial.begin()` is volledig verwijderd. Hierdoor werken GPIO 1 (TX) en GPIO 3 (RX) nu 100% betrouwbaar als digitale pinnen voor je LED en drukknop, zonder interferentie van de seriële poort.
-4. **Crash- & Hangbeveiliging**: `client.setTimeout(3000)` en `yield()` zijn toegevoegd aan de Telegram-functie om te voorkomen dat een haperende wifiverbinding de Watchdog Timer (WDT) triggert of de boel laat crashen.
+1. **Fully non-blocking (`millis()`)**: No `delay()` calls, so the ESP does not freeze while ringing.
+2. **Button interrupt**: A button press is captured at hardware level, even while the ESP8266 processes network or web tasks.
+3. **Hardware conflict resolved**: `Serial.begin()` is removed so GPIO 1 (TX) and GPIO 3 (RX) can be used reliably for LED and button input.
+4. **Crash and hang protection**: `client.setTimeout(3000)` and `yield()` are used in the Telegram function to reduce WDT resets on unstable WiFi.
 
 ```cpp
 */
@@ -25,7 +25,7 @@ In deze versie zijn alle eerdere verbeteringen gecombineerd:
 
 static const int PIN_RELAY_OLD = 0;
 static const int PIN_RELAY_NEW = 2;
-static const int PIN_BUTTON    = 3; // GPIO 3 / RX Pin (veilig te gebruiken mits Serial uit staat)
+static const int PIN_BUTTON    = 3; // GPIO 3 / RX pin (safe when Serial is disabled)
 static const int PIN_LED       = 1; // GPIO 1 / TX Pin
 
 static const bool RELAY_ACTIVE_LOW = true;
@@ -35,7 +35,7 @@ static uint32_t RING_PULSE_NEW_MS = 500;
 
 static const char *TZ_INFO = "CET-1CEST,M3.5.0/02,M10.5.0/03";
 
-/* Heap monitoring thresholds (ESP8266): waarschuw vroeg, paniek later */
+/* Heap monitoring thresholds (ESP8266): warn early, panic later */
 static const uint32_t HEAP_CHECK_INTERVAL_MS = 15000;
 static const uint32_t HEAP_WARN_BYTES = 12000;
 static const uint32_t HEAP_CRIT_BYTES = 9000;
@@ -56,20 +56,20 @@ static uint32_t muteOldUntilMs = 0;
 static uint32_t muteNewUntilMs = 0;
 static uint32_t muteTelegramUntilMs = 0;
 
-/* Non-blocking Relais timers */
+/* Non-blocking relay timers */
 static uint32_t relayOldOffTimeMs = 0;
 static uint32_t relayNewOffTimeMs = 0;
 
-/* Knoppen status via Interrupt */
+/* Button status via interrupt */
 volatile bool gButtonPressed = false;
 static uint32_t lastDebounceTime = 0;
-static const uint32_t DEBOUNCE_DELAY_MS = 35; // Alleen accepteren als de knop na 35ms nog steeds laag is
-static const uint32_t BUTTON_RETRIGGER_COOLDOWN_MS = 500; // Tijd tussen twee geldige beldrukken
+static const uint32_t DEBOUNCE_DELAY_MS = 35; // Accept only if button is still low after 35ms
+static const uint32_t BUTTON_RETRIGGER_COOLDOWN_MS = 500; // Time between two valid ring presses
 static bool gButtonPressArmed = true;
 static bool gButtonValidationPending = false;
 static uint32_t gButtonValidationDueMs = 0;
 
-/* Nachtmodus per onderdeel: standaard uit */
+/* Per-component night mode: default off */
 static bool nightModeOldEnabled = false;
 static bool nightModeNewEnabled = false;
 static bool nightModeTelegramEnabled = false;
@@ -155,7 +155,7 @@ static void debugClear() {
 }
 
 static String formatEpochWithSeconds(uint32_t epoch) {
-  if (!epoch) return "onbekend";
+  if (!epoch) return "unknown";
   time_t t = epoch;
   struct tm tm;
   localtime_r(&t, &tm);
@@ -207,14 +207,14 @@ static String buildDebugText(uint8_t maxLines, bool includeHeader) {
   out.reserve(1600);
 
   if (includeHeader) {
-    out += "Debuglog deurbel\n";
-    out += "Totaal regels: ";
+    out += "Doorbell debug log\n";
+    out += "Total lines: ";
     out += String(gDebugSize);
     out += "\n\n";
   }
 
   if (gDebugSize == 0) {
-    out += "(geen acties)\n";
+    out += "(no actions)\n";
     return out;
   }
 
@@ -240,7 +240,7 @@ static bool sendDebugLogToTelegram() {
   // Telegram limiet is ~4096 chars; houd marge voor veiligheid.
   if (msg.length() > 3200) {
     msg.remove(3200);
-    msg += "\n... ingekort";
+    msg += "\n... truncated";
   }
 
   return telegramSendText(msg, true);
@@ -346,7 +346,7 @@ static bool getEpoch(uint32_t &outEpoch) {
 }
 
 static String formatTime(uint32_t epoch) {
-  if (!epoch) return "onbekend";
+  if (!epoch) return "unknown";
   time_t t = epoch;
   struct tm tm;
   localtime_r(&t, &tm);
@@ -392,7 +392,7 @@ static void setRelay(int pin, bool on) {
 }
 
 /* ===================== INTERRUPT SERVICE ROUTINE ===================== */
-// Deze functie wordt direct en met prioriteit uitgevoerd zodra de knop wordt ingedrukt
+// This ISR runs immediately when the button line falls to GND.
 void IRAM_ATTR handleButtonInterrupt() {
   gButtonPressed = true;
 }
@@ -406,20 +406,20 @@ static void startRing() {
 
   if (oldAllowed) {
     setRelay(PIN_RELAY_OLD, true);
-    relayOldOffTimeMs = now + RING_PULSE_OLD_MS; // Stel de uitschakeltijd in
+    relayOldOffTimeMs = now + RING_PULSE_OLD_MS; // Schedule relay off time.
   }
 
   if (newAllowed) {
     setRelay(PIN_RELAY_NEW, true);
-    relayNewOffTimeMs = now + RING_PULSE_NEW_MS; // Stel de uitschakeltijd in
+    relayNewOffTimeMs = now + RING_PULSE_NEW_MS; // Schedule relay off time.
   }
 
-  debugLog("Belactie: old=%s new=%s", oldAllowed ? "aan" : "uit", newAllowed ? "aan" : "uit");
+  debugLog("Ring action: old=%s new=%s", oldAllowed ? "on" : "off", newAllowed ? "on" : "off");
 
   queuePush();
 }
 
-// Controleert in de achtergrond of een actief relais alweer uitgezet moet worden
+// Checks whether active relays should be switched off.
 static void checkRelayTimers() {
   uint32_t now = millis();
   
@@ -495,27 +495,27 @@ static bool telegramSendText(const String &msg, bool bypassMute) {
 static void telegramSend() {
   if (!gTelegramEnabled || isTelegramMuted() || isTelegramNightMuted() || qSize == 0) return;
 
-  // Rate limiting: Stuur maximaal 1 Telegram bericht per 10 seconden
+  // Rate limiting: send at most 1 Telegram message every 10 seconds.
   static uint32_t lastTelegramSentMs = 0;
   uint32_t now = millis();
   if (lastTelegramSentMs && (now - lastTelegramSentMs) < 10000UL) {
-    return; // Wacht nog even met sturen, verzamel de drukken in de queue
+    return; // Wait and batch multiple presses in the queue.
   }
 
-  String msg = "🔔 Deurbel\nAantal: " + String(qSize) + "\nLaatste: ";
+  String msg = "🔔 Doorbell\nCount: " + String(qSize) + "\nLast: ";
   msg += formatTime(queue[(qTail + 31) % 32].epoch);
 
   if (!telegramSendText(msg, false)) return;
 
-  // Registreer het tijdstip alleen na succesvolle poging.
+  // Update last-send only after a successful send attempt.
   lastTelegramSentMs = millis();
-  debugLog("Telegram verstuurd (%u events)", qSize);
+  debugLog("Telegram sent (%u events)", qSize);
   queueClear();
 }
 
 static const char* heapLevelLabel(HeapLevel lvl) {
-  if (lvl == HEAP_CRIT) return "kritiek";
-  if (lvl == HEAP_WARN) return "laag";
+  if (lvl == HEAP_CRIT) return "critical";
+  if (lvl == HEAP_WARN) return "low";
   return "ok";
 }
 
@@ -551,17 +551,17 @@ static void heapMonitorTick() {
   String msg;
   msg.reserve(220);
   if (newLevel == HEAP_OK && gHeapLevel != HEAP_OK) {
-    msg = "✅ ESP herstel\nHeap weer stabiel: " + String(freeHeap) + " bytes\nMin gezien: " + String(gMinHeapSeen) + " bytes";
+    msg = "✅ ESP recovered\nHeap stable again: " + String(freeHeap) + " bytes\nMin seen: " + String(gMinHeapSeen) + " bytes";
   } else if (newLevel == HEAP_CRIT) {
-    msg = "🚨 ESP geheugen kritiek\nVrije heap: " + String(freeHeap) + " bytes\nMin gezien: " + String(gMinHeapSeen) + " bytes\nAdvies: herstart of minder web-requests";
+    msg = "🚨 ESP memory critical\nFree heap: " + String(freeHeap) + " bytes\nMin seen: " + String(gMinHeapSeen) + " bytes\nAdvice: reboot or reduce web requests";
   } else if (newLevel == HEAP_WARN) {
-    msg = "⚠️ ESP geheugen laag\nVrije heap: " + String(freeHeap) + " bytes\nMin gezien: " + String(gMinHeapSeen) + " bytes";
+    msg = "⚠️ ESP memory low\nFree heap: " + String(freeHeap) + " bytes\nMin seen: " + String(gMinHeapSeen) + " bytes";
   }
 
-  // Kritieke systeemwaarschuwingen mogen door mute heen; bij hard uitgeschakelde Telegram niet.
+  // Critical system warnings may bypass mute, unless Telegram is fully disabled.
   if (telegramSendText(msg, true)) {
     gLastHeapAlertMs = now;
-    debugLog("Heap waarschuwing: %s (%lu bytes)", heapLevelLabel(newLevel), (unsigned long)freeHeap);
+    debugLog("Heap alert: %s (%lu bytes)", heapLevelLabel(newLevel), (unsigned long)freeHeap);
   }
 
   gHeapLevel = newLevel;
@@ -571,40 +571,40 @@ static void heapMonitorTick() {
 ESP8266WebServer web(80);
 
 static String muteStatus(uint32_t untilMs) {
-  if (!untilMs) return "actief";
-  if (!isMuted(untilMs)) return "actief";
+  if (!untilMs) return "active";
+  if (!isMuted(untilMs)) return "active";
   uint32_t e;
-  if (!getEpoch(e)) return "gedempt";
-  return "gedempt tot " + formatTime(e + (untilMs - millis()) / 1000);
+  if (!getEpoch(e)) return "muted";
+  return "muted until " + formatTime(e + (untilMs - millis()) / 1000);
 }
 
 static String nightModeStatus(bool enabled, uint8_t startHour, uint8_t endHour, bool activeNow) {
-  if (!enabled) return "uit";
-  String s = "aan (";
+  if (!enabled) return "off";
+  String s = "on (";
   s += String(startHour);
   s += ":00-";
   s += String(endHour);
   s += ":00";
-  s += activeNow ? ", nu actief)" : ", nu inactief)";
+  s += activeNow ? ", active now)" : ", inactive now)";
   return s;
 }
 
 static String aanUitStatus(bool enabled) {
-  return enabled ? "aan" : "uit";
+  return enabled ? "on" : "off";
 }
 
 static void handleRoot() {
   bool wifiUp = WiFi.status() == WL_CONNECTED;
   String ip = wifiUp ? WiFi.localIP().toString() : "offline";
 
-  // Stream in kleine blokken om piekgebruik van heap te verlagen.
+  // Stream in small chunks to lower peak heap usage.
   web.setContentLength(CONTENT_LENGTH_UNKNOWN);
   web.send(200, "text/html; charset=utf-8", "");
 
   web.sendContent(
     F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
       "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-      "<title>Deurbelbediening</title>"
+      "<title>Doorbell control</title>"
       "<style>"
       "*{box-sizing:border-box;margin:0;padding:0;}"
       "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px;color:#333;}"
@@ -631,29 +631,29 @@ static void handleRoot() {
       ".log-row{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.08);}"
       ".footer{background:#f4f6f8;border-top:1px solid #e7eaee;color:#647181;text-align:center;padding:16px;}"
       "@media(max-width:640px){body{padding:10px;}.header{padding:20px;}.header h1{font-size:1.7em;}.content{padding:16px;}}"
-          "</style></head><body><div class='container'><div class='header'><h1>🔔 Deurbelbediening</h1><p>ESP01S status en instellingen</p><p>Standaard bij opstarten: onderdelen AAN, nachtmodus UIT.</p></div><div class='content'><div class='status-grid'>")
+          "</style></head><body><div class='container'><div class='header'><h1>🔔 Doorbell control</h1><p>ESP01S status and settings</p><p>Default on boot: components ON, night mode OFF.</p></div><div class='content'><div class='status-grid'>")
   );
 
   String chunk;
   chunk.reserve(256);
 
-  chunk = "<div class='status-card'><h3>IP-adres</h3><div class='status-value'>" + ip + "</div></div>";
+  chunk = "<div class='status-card'><h3>IP address</h3><div class='status-value'>" + ip + "</div></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='status-card'><h3>Wifi</h3><div class='status-value ";
-  chunk += (wifiUp ? "badge-on'>verbonden" : "badge-off'>offline");
+  chunk = "<div class='status-card'><h3>WiFi</h3><div class='status-value ";
+  chunk += (wifiUp ? "badge-on'>connected" : "badge-off'>offline");
   chunk += "</div></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='status-card'><h3>Nachtmodus actief</h3><div class='status-value ";
-  chunk += ((isOldNightMuted() || isNewNightMuted() || isTelegramNightMuted()) ? "badge-off'>ja" : "badge-on'>nee");
+  chunk = "<div class='status-card'><h3>Night mode active</h3><div class='status-value ";
+  chunk += ((isOldNightMuted() || isNewNightMuted() || isTelegramNightMuted()) ? "badge-off'>yes" : "badge-on'>no");
   chunk += "</div></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='status-card'><h3>Wachtrij</h3><div class='status-value'>" + String(qSize) + " gebeurtenissen</div></div>";
+  chunk = "<div class='status-card'><h3>Queue</h3><div class='status-value'>" + String(qSize) + " events</div></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='status-card'><h3>Geheugen</h3><div class='status-value ";
+  chunk = "<div class='status-card'><h3>Memory</h3><div class='status-value ";
   chunk += heapLevelClass(gHeapLevel);
   chunk += "'>";
   chunk += String(ESP.getFreeHeap());
@@ -663,14 +663,14 @@ static void handleRoot() {
   web.sendContent(chunk);
 
   web.sendContent(F("</div><div class='section'><h2>🧪 Debugging</h2>"));
-  chunk = "<div class='mute-block'><div class='mute-title'>Debugmodus</div><div class='mute-status'>Status: ";
-  chunk += gDebugUiEnabled ? "aan" : "uit";
-  chunk += " (basislog altijd actief, aan = extra details)</div><a class='btn' href='/debug?en=1'>Debug aan</a><a class='btn btn-off' href='/debug?en=0'>Debug uit</a><a class='btn btn-off' href='/debug?clear=1'>Log leegmaken</a><a class='btn' href='/debug?export=1'>Export .txt</a><a class='btn' href='/debug?sendtg=1'>Stuur naar Telegram</a></div>";
+  chunk = "<div class='mute-block'><div class='mute-title'>Debug mode</div><div class='mute-status'>Status: ";
+  chunk += gDebugUiEnabled ? "on" : "off";
+  chunk += " (base log always active, on = extra details)</div><a class='btn' href='/debug?en=1'>Debug on</a><a class='btn btn-off' href='/debug?en=0'>Debug off</a><a class='btn btn-off' href='/debug?clear=1'>Clear log</a><a class='btn' href='/debug?export=1'>Export .txt</a><a class='btn' href='/debug?sendtg=1'>Send to Telegram</a></div>";
   web.sendContent(chunk);
 
-  web.sendContent(F("<div class='mute-block'><div class='mute-title'>Actielog (geen ruststatus)</div><div class='log-wrap'>"));
+  web.sendContent(F("<div class='mute-block'><div class='mute-title'>Action log (no idle status)</div><div class='log-wrap'>"));
   if (gDebugSize == 0) {
-    web.sendContent(F("<div class='log-row'>Nog geen acties geregistreerd.</div>"));
+    web.sendContent(F("<div class='log-row'>No actions recorded yet.</div>"));
   } else {
     for (uint8_t i = 0; i < gDebugSize; i++) {
       uint8_t idx = (gDebugHead + i) % 40;
@@ -684,76 +684,76 @@ static void handleRoot() {
   }
   web.sendContent(F("</div></div>"));
 
-  web.sendContent(F("</div><div class='section'><h2>⏻ Onderdelen aan/uit</h2>"));
+  web.sendContent(F("</div><div class='section'><h2>⏻ Components on/off</h2>"));
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Oude bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>Legacy bell</div><div class='mute-status'>Status: ";
   chunk += aanUitStatus(gRelayOldEnabled);
-  chunk += "</div><a class='btn' href='/part?ch=old&en=1'>Helemaal aan</a><a class='btn btn-off' href='/part?ch=old&en=0'>Helemaal uit</a></div>";
+  chunk += "</div><a class='btn' href='/part?ch=old&en=1'>Fully on</a><a class='btn btn-off' href='/part?ch=old&en=0'>Fully off</a></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Nieuwe bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>New bell</div><div class='mute-status'>Status: ";
   chunk += aanUitStatus(gRelayNewEnabled);
-  chunk += "</div><a class='btn' href='/part?ch=new&en=1'>Helemaal aan</a><a class='btn btn-off' href='/part?ch=new&en=0'>Helemaal uit</a></div>";
+  chunk += "</div><a class='btn' href='/part?ch=new&en=1'>Fully on</a><a class='btn btn-off' href='/part?ch=new&en=0'>Fully off</a></div>";
   web.sendContent(chunk);
 
   chunk = "<div class='mute-block'><div class='mute-title'>Telegram</div><div class='mute-status'>Status: ";
   chunk += aanUitStatus(gTelegramEnabled);
-  chunk += "</div><a class='btn' href='/part?ch=tg&en=1'>Helemaal aan</a><a class='btn btn-off' href='/part?ch=tg&en=0'>Helemaal uit</a></div>";
+  chunk += "</div><a class='btn' href='/part?ch=tg&en=1'>Fully on</a><a class='btn btn-off' href='/part?ch=tg&en=0'>Fully off</a></div>";
   web.sendContent(chunk);
 
-  web.sendContent(F("</div><div class='section'><h2>🔕 Tijdelijk dempen</h2>"));
+  web.sendContent(F("</div><div class='section'><h2>🔕 Temporary mute</h2>"));
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Oude bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>Legacy bell</div><div class='mute-status'>Status: ";
   chunk += muteStatus(muteOldUntilMs);
-  chunk += "</div><a class='btn' href='/mute?old=1800'>30 min</a><a class='btn' href='/mute?old=3600'>1 uur</a><a class='btn' href='/mute?old=7200'>2 uur</a><a class='btn' href='/mute?old=14400'>4 uur</a><a class='btn btn-off' href='/mute?old=0'>Annuleren</a></div>";
+  chunk += "</div><a class='btn' href='/mute?old=1800'>30 min</a><a class='btn' href='/mute?old=3600'>1 hour</a><a class='btn' href='/mute?old=7200'>2 hours</a><a class='btn' href='/mute?old=14400'>4 hours</a><a class='btn btn-off' href='/mute?old=0'>Cancel</a></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Nieuwe bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>New bell</div><div class='mute-status'>Status: ";
   chunk += muteStatus(muteNewUntilMs);
-  chunk += "</div><a class='btn' href='/mute?new=1800'>30 min</a><a class='btn' href='/mute?new=3600'>1 uur</a><a class='btn' href='/mute?new=7200'>2 uur</a><a class='btn' href='/mute?new=14400'>4 uur</a><a class='btn btn-off' href='/mute?new=0'>Annuleren</a></div>";
+  chunk += "</div><a class='btn' href='/mute?new=1800'>30 min</a><a class='btn' href='/mute?new=3600'>1 hour</a><a class='btn' href='/mute?new=7200'>2 hours</a><a class='btn' href='/mute?new=14400'>4 hours</a><a class='btn btn-off' href='/mute?new=0'>Cancel</a></div>";
   web.sendContent(chunk);
 
   chunk = "<div class='mute-block'><div class='mute-title'>Telegram</div><div class='mute-status'>Status: ";
   chunk += muteStatus(muteTelegramUntilMs);
-  chunk += "</div><a class='btn' href='/mute?tg=1800'>30 min</a><a class='btn' href='/mute?tg=3600'>1 uur</a><a class='btn' href='/mute?tg=7200'>2 uur</a><a class='btn' href='/mute?tg=14400'>4 uur</a><a class='btn btn-off' href='/mute?tg=0'>Annuleren</a></div>";
+  chunk += "</div><a class='btn' href='/mute?tg=1800'>30 min</a><a class='btn' href='/mute?tg=3600'>1 hour</a><a class='btn' href='/mute?tg=7200'>2 hours</a><a class='btn' href='/mute?tg=14400'>4 hours</a><a class='btn btn-off' href='/mute?tg=0'>Cancel</a></div>";
   web.sendContent(chunk);
 
-  web.sendContent(F("</div><div class='section'><h2>🌙 Nachtmodus</h2>"));
+  web.sendContent(F("</div><div class='section'><h2>🌙 Night mode</h2>"));
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Oude bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>Legacy bell</div><div class='mute-status'>Status: ";
   chunk += nightModeStatus(nightModeOldEnabled, nightOldStartHour, nightOldEndHour, isOldNightMuted());
-  chunk += "</div><a class='btn' href='/night?ch=old&en=1'>Inschakelen</a><a class='btn btn-off' href='/night?ch=old&en=0'>Uitschakelen</a> ";
-  chunk += "<a class='btn' href='/night?ch=old&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=old&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=old&start=0&end=0'>24 uur</a><br><br>";
+  chunk += "</div><a class='btn' href='/night?ch=old&en=1'>Enable</a><a class='btn btn-off' href='/night?ch=old&en=0'>Disable</a> ";
+  chunk += "<a class='btn' href='/night?ch=old&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=old&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=old&start=0&end=0'>24 hours</a><br><br>";
   chunk += "<form action='/night' method='get'>";
   chunk += "<input type='hidden' name='ch' value='old'>";
   chunk += "Start <input type='number' name='start' min='0' max='23' value='" + String(nightOldStartHour) + "' style='width:60px;'> ";
-  chunk += "Einde <input type='number' name='end' min='0' max='23' value='" + String(nightOldEndHour) + "' style='width:60px;'> ";
-  chunk += "<button class='btn' type='submit'>Tijden opslaan</button></form></div>";
+  chunk += "End <input type='number' name='end' min='0' max='23' value='" + String(nightOldEndHour) + "' style='width:60px;'> ";
+  chunk += "<button class='btn' type='submit'>Save times</button></form></div>";
   web.sendContent(chunk);
 
-  chunk = "<div class='mute-block'><div class='mute-title'>Nieuwe bel</div><div class='mute-status'>Status: ";
+  chunk = "<div class='mute-block'><div class='mute-title'>New bell</div><div class='mute-status'>Status: ";
   chunk += nightModeStatus(nightModeNewEnabled, nightNewStartHour, nightNewEndHour, isNewNightMuted());
-  chunk += "</div><a class='btn' href='/night?ch=new&en=1'>Inschakelen</a><a class='btn btn-off' href='/night?ch=new&en=0'>Uitschakelen</a> ";
-  chunk += "<a class='btn' href='/night?ch=new&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=new&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=new&start=0&end=0'>24 uur</a><br><br>";
+  chunk += "</div><a class='btn' href='/night?ch=new&en=1'>Enable</a><a class='btn btn-off' href='/night?ch=new&en=0'>Disable</a> ";
+  chunk += "<a class='btn' href='/night?ch=new&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=new&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=new&start=0&end=0'>24 hours</a><br><br>";
   chunk += "<form action='/night' method='get'>";
   chunk += "<input type='hidden' name='ch' value='new'>";
   chunk += "Start <input type='number' name='start' min='0' max='23' value='" + String(nightNewStartHour) + "' style='width:60px;'> ";
-  chunk += "Einde <input type='number' name='end' min='0' max='23' value='" + String(nightNewEndHour) + "' style='width:60px;'> ";
-  chunk += "<button class='btn' type='submit'>Tijden opslaan</button></form></div>";
+  chunk += "End <input type='number' name='end' min='0' max='23' value='" + String(nightNewEndHour) + "' style='width:60px;'> ";
+  chunk += "<button class='btn' type='submit'>Save times</button></form></div>";
   web.sendContent(chunk);
 
   chunk = "<div class='mute-block'><div class='mute-title'>Telegram</div><div class='mute-status'>Status: ";
   chunk += nightModeStatus(nightModeTelegramEnabled, nightTgStartHour, nightTgEndHour, isTelegramNightMuted());
-  chunk += "</div><a class='btn' href='/night?ch=tg&en=1'>Inschakelen</a><a class='btn btn-off' href='/night?ch=tg&en=0'>Uitschakelen</a> ";
-  chunk += "<a class='btn' href='/night?ch=tg&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=tg&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=tg&start=0&end=0'>24 uur</a><br><br>";
+  chunk += "</div><a class='btn' href='/night?ch=tg&en=1'>Enable</a><a class='btn btn-off' href='/night?ch=tg&en=0'>Disable</a> ";
+  chunk += "<a class='btn' href='/night?ch=tg&start=22&end=7'>22-07</a><a class='btn' href='/night?ch=tg&start=23&end=6'>23-06</a><a class='btn' href='/night?ch=tg&start=0&end=0'>24 hours</a><br><br>";
   chunk += "<form action='/night' method='get'>";
   chunk += "<input type='hidden' name='ch' value='tg'>";
   chunk += "Start <input type='number' name='start' min='0' max='23' value='" + String(nightTgStartHour) + "' style='width:60px;'> ";
-  chunk += "Einde <input type='number' name='end' min='0' max='23' value='" + String(nightTgEndHour) + "' style='width:60px;'> ";
-  chunk += "<button class='btn' type='submit'>Tijden opslaan</button></form></div></div><div class='footer'>Uptime: ";
+  chunk += "End <input type='number' name='end' min='0' max='23' value='" + String(nightTgEndHour) + "' style='width:60px;'> ";
+  chunk += "<button class='btn' type='submit'>Save times</button></form></div></div><div class='footer'>Uptime: ";
   chunk += String(millis() / 1000);
-  chunk += " seconden • Laagste heap: ";
-  if (gMinHeapSeen == 0xFFFFFFFFUL) chunk += "n.v.t.";
+  chunk += " seconds • Lowest heap: ";
+  if (gMinHeapSeen == 0xFFFFFFFFUL) chunk += "n/a";
   else chunk += String(gMinHeapSeen) + " bytes";
   chunk += "</div></div></body></html>";
   web.sendContent(chunk);
@@ -811,9 +811,9 @@ static void handleNight() {
       }
     }
 
-    debugLog("Nachtmodus %s: en=%s start=%u end=%u",
+    debugLog("Night mode %s: en=%s start=%u end=%u",
              ch.c_str(),
-             *enabled ? "aan" : "uit",
+             *enabled ? "aan" : "off",
              (unsigned)*start,
              (unsigned)*end);
 
@@ -831,13 +831,13 @@ static void handleDebug() {
     String txt = buildDebugText(0, true);
     web.sendHeader("Content-Disposition", "attachment; filename=debug-log.txt");
     web.send(200, "text/plain; charset=utf-8", txt);
-    debugLog("Debuglog geexporteerd via web");
+    debugLog("Debug log exported via web");
     return;
   }
 
   if (web.hasArg("sendtg")) {
     bool ok = sendDebugLogToTelegram();
-    debugLog("Debuglog naar Telegram: %s", ok ? "gelukt" : "mislukt");
+    debugLog("Debug log to Telegram: %s", ok ? "success" : "failed");
     web.sendHeader("Location", "/");
     web.send(302);
     return;
@@ -849,9 +849,9 @@ static void handleDebug() {
     if (enable && !gDebugUiEnabled) {
       gDebugUiEnabled = true;
       changed = true;
-      debugLog("Debugmodus ingeschakeld");
+      debugLog("Debug mode enabled");
     } else if (!enable && gDebugUiEnabled) {
-      debugLog("Debugmodus uitgeschakeld");
+      debugLog("Debug mode disabled");
       gDebugUiEnabled = false;
       changed = true;
     }
@@ -890,12 +890,12 @@ static void handlePartPower() {
       changed = true;
     }
     if (!enable) {
-      // Bij volledig uitzetten van Telegram ook meteen wachtrij leeg maken.
+      // When fully disabling Telegram, clear queue immediately.
       queueClear();
     }
   }
 
-  debugLog("Onderdeel %s -> %s", ch.c_str(), enable ? "aan" : "uit");
+  debugLog("Component %s -> %s", ch.c_str(), enable ? "on" : "off");
 
   if (changed) {
     savePersistentSettings();
@@ -910,17 +910,17 @@ static void handleMute() {
   if (web.hasArg("old")) {
     int sec = web.arg("old").toInt();
     muteOldUntilMs = now + sec * 1000UL;
-    debugLog("Demping oude bel: %d sec", sec);
+    debugLog("Mute legacy bell: %d sec", sec);
   }
   if (web.hasArg("new")) {
     int sec = web.arg("new").toInt();
     muteNewUntilMs = now + sec * 1000UL;
-    debugLog("Demping nieuwe bel: %d sec", sec);
+    debugLog("Mute new bell: %d sec", sec);
   }
   if (web.hasArg("tg")) {
     int sec = web.arg("tg").toInt();
     muteTelegramUntilMs = now + sec * 1000UL;
-    debugLog("Demping Telegram: %d sec", sec);
+    debugLog("Mute Telegram: %d sec", sec);
   }
   web.sendHeader("Location", "/");
   web.send(302);
@@ -928,19 +928,19 @@ static void handleMute() {
 
 /* ===================== SETUP / LOOP ===================== */
 void setup() {
-  // Serial.begin(115200); // Volledig uitgeschakeld om GPIO 1 en 3 vrij te maken voor LED/knop
+  // Serial.begin(115200); // Fully disabled to free GPIO 1 and 3 for LED/button
 
   pinMode(PIN_RELAY_OLD, OUTPUT);
   pinMode(PIN_RELAY_NEW, OUTPUT);
   
-  // Zorg dat de relais bij het opstarten gegarandeerd uitstaan
+  // Ensure both relays are off at startup.
   setRelay(PIN_RELAY_OLD, false);
   setRelay(PIN_RELAY_NEW, false);
 
-  // Configureer de knop-pin met de interne pull-up weerstand
+  // Configure button pin with internal pull-up
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   
-  // Koppel de hardware-interrupt aan de knop (triggert zodra de pin naar GND getrokken wordt)
+  // Attach hardware interrupt to button (triggers when pin is pulled to GND)
   attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButtonInterrupt, FALLING);
 
   pinMode(PIN_LED, OUTPUT);
@@ -949,13 +949,13 @@ void setup() {
   gSettingsStorageReady = true;
   if (gSettingsStorageReady) {
     if (loadPersistentSettings()) {
-      debugLog("Persistente instellingen geladen");
+      debugLog("Persistent settings loaded");
     } else {
       savePersistentSettings();
-      debugLog("Standaardinstellingen opgeslagen");
+      debugLog("Default settings saved");
     }
   } else {
-    debugLog("Waarschuwing: EEPROM niet beschikbaar");
+    debugLog("Warning: EEPROM not available");
   }
 
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -975,13 +975,13 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
-  // Her-arm pas zodra de knop fysiek is losgelaten.
+  // Re-arm only after the button is physically released.
   if (!gButtonPressArmed && digitalRead(PIN_BUTTON) == HIGH) {
     gButtonPressArmed = true;
-    debugLogVerbose("Knop vrijgegeven: trigger opnieuw gewapend");
+    debugLogVerbose("Button released: trigger re-armed");
   }
 
-  // Interrupt gezien: start alleen een validatievenster als trigger gewapend is.
+  // Interrupt seen: start validation window only when trigger is armed.
   if (gButtonPressed) {
     gButtonPressed = false;
     if (gButtonPressArmed && !gButtonValidationPending) {
@@ -990,29 +990,30 @@ void loop() {
     }
   }
 
-  // Alleen een echte belactie als de knop na debounce nog steeds laag is.
+  // Only trigger a ring when button is still low after debounce.
   if (gButtonValidationPending && (int32_t)(now - gButtonValidationDueMs) >= 0) {
     gButtonValidationPending = false;
 
     if (digitalRead(PIN_BUTTON) == LOW && gButtonPressArmed) {
-      // ONESHOT COOLDOWN: De knop wordt pas geaccepteerd als er minstens
-      // 500 milliseconden (0.5 seconden) zijn verstreken sinds de vorige belbeurt.
+      // ONESHOT COOLDOWN: accept button only if at least
+      // 500 milliseconds (0.5 seconds) passed since the previous ring.
       if (lastDebounceTime == 0 || (now - lastDebounceTime) > BUTTON_RETRIGGER_COOLDOWN_MS) {
         startRing();
         lastDebounceTime = now;
         gButtonPressArmed = false;
       } else {
-        debugLogVerbose("Druk genegeerd: cooldown actief (%lums)", (unsigned long)(now - lastDebounceTime));
+        debugLogVerbose("Press ignored: cooldown active (%lums)", (unsigned long)(now - lastDebounceTime));
       }
     } else {
-      debugLogVerbose("Spook-trigger genegeerd: knop niet stabiel laag");
+      debugLogVerbose("Ghost trigger ignored: button not stably low");
     }
   }
 
-  checkRelayTimers(); // Regelt het non-blocking uitschakelen van de bellen
-  telegramSend();     // Verwerkt en verstuurt het Telegram-bericht
-  heapMonitorTick();  // Waarschuwt automatisch bij laag/kritiek geheugen
-  web.handleClient(); // Handelt binnenkomende webserver-verzoeken af
+  checkRelayTimers(); // Handles non-blocking relay switch-off.
+  telegramSend();     // Processes and sends the Telegram message
+  heapMonitorTick();  // Automatically warns on low/critical memory
+  web.handleClient(); // Handles incoming webserver requests
   
-  yield();            // Geeft de ESP8266 Wi-Fi achtergrondtaken expliciet ademruimte
+  yield();            // Gives ESP8266 WiFi background tasks execution time
 }
+
